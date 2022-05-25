@@ -1,0 +1,194 @@
+library(simrec)
+library(dplyr)
+library(haven)
+library(survival)
+library(reda)
+library(rms)
+library(lme4)
+require(foreign)
+require(ggplot2)
+require(MASS)
+
+### Example:
+### A sample of 10 individuals
+
+
+getsim<-function(x, y){
+
+N <- 2000
+
+### with a binomially distributed covariate with a regression coefficient
+### of beta=0.3, and a standard normally distributed covariate with a
+### regression coefficient of beta=0.2,
+
+dist.x <- c("binomial")
+par.x <- list(0.5)
+beta.x <- c(0.1)
+
+### a gamma distributed frailty variable with variance 0.25
+
+dist.z <- "gamma"
+par.z <- x
+
+### and a Weibull-shaped baseline hazard with shape parameter lambda=1
+### and scale parameter nu=2.
+
+dist.rec <- "weibull"
+par.rec <- c(1,2)
+
+### Subjects are to be followed for two years with 20\% of the subjects
+### being censored according to a uniformly distributed censoring time
+### within [0,2] (in years).
+
+fu.min <- 2
+fu.max <- 2
+cens.prob <- y
+
+### After each event a subject is not at risk for experiencing further events
+### for a period of 30 days with a probability of 50\%.
+
+dfree <- 30/365
+pfree <- 0.5
+
+simdata <- simrec(N, fu.min, fu.max, cens.prob, dist.x, par.x, beta.x,
+                  dist.z, par.z, dist.rec, par.rec, pfree, dfree)
+
+
+simdata<-simdata %>% group_by(id) %>% mutate(timept = row_number())
+simdata<-simdata %>% group_by(id) %>% mutate(count = n())
+
+simdataW<-simdata %>% group_by(id) %>% summarise(start=last(start),stop=last(stop),status=last(status),timept = last(timept)) %>% bind_rows(simdata,.) %>% arrange(id)
+
+simdataW<-simdataW %>% group_by(id) %>% summarise(start=last(start),stop=last(stop),status=last(status),timept = last(timept)) %>% bind_rows(simdataW,.) %>% arrange(id)
+
+simdataW<-simdataW %>% group_by(id) %>% mutate(timeptW = row_number())
+
+simdataW<-simdataW[simdataW$timeptW<=3,]
+simdataW$timept<-simdataW$timeptW
+
+firstStop <- simdata %>% group_by(id) %>% arrange(timept) %>% slice(1) %>% ungroup
+firstStop$count1<-firstStop$count-1
+
+simdata$TStart0<-0
+simdata$Tgap<-simdata$stop-simdata$start
+simdata$count<-simdata$count-1
+
+simdataW$TStart0<-0
+simdataW$Tgap<-simdataW$stop-simdataW$start
+simdataW$count<-simdataW$count-1
+
+#dispersion on count of events from negative binomial
+m1 <- glm.nb(count1 ~ 1, data = firstStop)
+summary(m1)
+disper<-round(1/m1$theta,2)
+disper
+table(firstStop$count1)
+
+fit1<-coxph(Surv(start, stop, status) ~ x + cluster(id), data=simdata, control = coxph.control(timefix = FALSE))
+LB1<-round(exp(confint(fit1))[1],2)  #coefficient CIs
+UB1<-round(exp(confint(fit1))[2],2)  #coefficient CIs
+HR1<-round(summary(fit1)$coefficients[2],3)  #Also HR CIs
+pv1<-round(summary(fit1)$coefficients[6],3)
+HRAG<-paste(HR1, "(", LB1, "-", UB1, ")")
+cnt1<-as.numeric(pv1<0.05)
+d1<-cbind(HR1, LB1, UB1, pv1, cnt1)
+
+#Prentice-William-Peterson (PWP)
+
+fit2<-coxph(Surv(start, stop, status) ~ x + cluster(id) + strata(timept), data=simdata, control = coxph.control(timefix = FALSE))
+LB2<-round(exp(confint(fit2))[1],2)  #coefficient CIs
+UB2<-round(exp(confint(fit2))[2],2)  #coefficient CIs
+HR2<-round(summary(fit2)$coefficients[2],3)  #Also HR CIs
+pv2<-round(summary(fit2)$coefficients[6],3)
+HRtotal<-paste(HR2, "(", LB2, "-", UB2, ")")
+cnt2<-as.numeric(pv2<0.05)
+d2<-cbind(HR2, LB2, UB2, pv2, cnt2)
+
+#Prentice-William-Peterson (PWP gap)
+
+fit3<-coxph(Surv(TStart0, Tgap, status) ~ x + cluster(id) + strata(timept), data=simdata, control = coxph.control(timefix = FALSE))
+LB3<-round(exp(confint(fit3))[1],2)  #coefficient CIs
+UB3<-round(exp(confint(fit3))[2],2)  #coefficient CIs
+HR3<-round(summary(fit3)$coefficients[2],3)  #Also HR CIs
+pv3<-round(summary(fit3)$coefficients[6],3)
+HRgap<-paste(HR3, "(", LB3, "-", UB3, ")")
+cnt3<-as.numeric(pv3<0.05)
+d3<-cbind(HR3, LB3, UB3, pv3, cnt3)
+
+#Wei-Lin-Weissfeld
+
+fit4<-coxph(Surv(start, stop, status) ~ x + cluster(id) + strata(timept), data=simdataW, control = coxph.control(timefix = FALSE))
+LB4<-round(exp(confint(fit4))[1],2)  #coefficient CIs
+UB4<-round(exp(confint(fit4))[2],2)  #coefficient CIs
+HR4<-round(summary(fit4)$coefficients[2],3)  #Also HR CIs
+pv4<-round(summary(fit4)$coefficients[6],3)
+HRWLW<-paste(HR4, "(", LB4, "-", UB4, ")")
+cnt4<-as.numeric(pv4<0.05)
+d4<-cbind(HR4, LB4, UB4, pv4, cnt4)
+
+alld<-cbind(disper,d1,d2,d3,d4)
+return(alld)
+}
+
+alllst1<-NULL
+alllst2<-NULL
+alllst3<-NULL
+alllst4<-NULL
+alllst5<-NULL
+alllst6<-NULL
+alllst7<-NULL
+alllst8<-NULL
+
+for (i in 1:1000){
+set.seed(i)
+lst1<-getsim(1, 0.8)
+alllst1<-rbind(alllst1, lst1)
+lst2<-getsim(3, 0.8)
+alllst2<-rbind(alllst2, lst2)
+lst3<-getsim(5, 0.8)
+alllst3<-rbind(alllst3, lst3)
+lst4<-getsim(7, 0.8)
+alllst4<-rbind(alllst4, lst4)
+lst5<-getsim(10, 0.8)
+alllst5<-rbind(alllst5, lst5)
+lst6<-getsim(12, 0.8)
+alllst6<-rbind(alllst6, lst6)
+lst7<-getsim(15, 0.8)
+alllst7<-rbind(alllst7, lst7)
+lst8<-getsim(20, 0.8)
+alllst8<-rbind(alllst8, lst8)
+}
+
+write.csv(alllst1,"//unix/stat/database/recurrent/Yueci/Output/alllst_1.csv")
+write.csv(alllst2,"//unix/stat/database/recurrent/Yueci/Output/alllst_3.csv")
+write.csv(alllst3,"//unix/stat/database/recurrent/Yueci/Output/alllst_5.csv")
+write.csv(alllst4,"//unix/stat/database/recurrent/Yueci/Output/alllst_7.csv")
+write.csv(alllst5,"//unix/stat/database/recurrent/Yueci/Output/alllst_10.csv")
+write.csv(alllst6,"//unix/stat/database/recurrent/Yueci/Output/alllst_12.csv")
+write.csv(alllst7,"//unix/stat/database/recurrent/Yueci/Output/alllst_15.csv")
+write.csv(alllst8,"//unix/stat/database/recurrent/Yueci/Output/alllst_20.csv")
+
+power1<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_1.csv")
+power2<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_3.csv")
+power3<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_5.csv")
+power4<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_7.csv")
+power5<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_10.csv")
+power6<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_12.csv")
+power7<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_15.csv")
+power8<-read.csv(file="//unix/stat/database/recurrent/Yueci/Output/alllst_20.csv")
+
+meanX<-c(mean(power1$disper),mean(power2$disper),mean(power3$disper),mean(power4$disper),mean(power5$disper),mean(power6$disper),mean(power7$disper),mean(power8$disper)) 
+pwd1<-c(sum(power1$cnt1)/1000,sum(power2$cnt1)/1000,sum(power3$cnt1)/1000,sum(power4$cnt1)/1000,sum(power5$cnt1)/1000,sum(power6$cnt1)/1000,sum(power7$cnt1)/1000,sum(power8$cnt1)/1000)
+pwd2<-c(sum(power1$cnt2)/1000,sum(power2$cnt2)/1000,sum(power3$cnt2)/1000,sum(power4$cnt2)/1000,sum(power5$cnt2)/1000,sum(power6$cnt2)/1000,sum(power7$cnt2)/1000,sum(power8$cnt2)/1000)
+pwd3<-c(sum(power1$cnt3)/1000,sum(power2$cnt3)/1000,sum(power3$cnt3)/1000,sum(power4$cnt3)/1000,sum(power5$cnt3)/1000,sum(power6$cnt3)/1000,sum(power7$cnt3)/1000,sum(power8$cnt3)/1000)
+pwd4<-c(sum(power1$cnt4)/1000,sum(power2$cnt4)/1000,sum(power3$cnt4)/1000,sum(power4$cnt4)/1000,sum(power5$cnt4)/1000,sum(power6$cnt4)/1000,sum(power7$cnt4)/1000,sum(power8$cnt4)/1000)
+mse1<-c(mean((power1$HR1-exp(0.1))^2),mean((power2$HR1-exp(0.1))^2),mean((power3$HR1-exp(0.1))^2),mean((power4$HR1-exp(0.1))^2),mean((power5$HR1-exp(0.1))^2),mean((power6$HR1-exp(0.1))^2),mean((power7$HR1-exp(0.1))^2),mean((power8$HR1-exp(0.1))^2))
+mse2<-c(mean((power1$HR2-exp(0.1))^2),mean((power2$HR2-exp(0.1))^2),mean((power3$HR2-exp(0.1))^2),mean((power4$HR2-exp(0.1))^2),mean((power5$HR2-exp(0.1))^2),mean((power6$HR2-exp(0.1))^2),mean((power7$HR2-exp(0.1))^2),mean((power8$HR2-exp(0.1))^2))
+mse3<-c(mean((power1$HR3-exp(0.1))^2),mean((power2$HR3-exp(0.1))^2),mean((power3$HR3-exp(0.1))^2),mean((power4$HR3-exp(0.1))^2),mean((power5$HR3-exp(0.1))^2),mean((power6$HR3-exp(0.1))^2),mean((power7$HR3-exp(0.1))^2),mean((power8$HR3-exp(0.1))^2))
+mse4<-c(mean((power1$HR4-exp(0.1))^2),mean((power2$HR4-exp(0.1))^2),mean((power3$HR4-exp(0.1))^2),mean((power4$HR4-exp(0.1))^2),mean((power5$HR4-exp(0.1))^2),mean((power6$HR4-exp(0.1))^2),mean((power7$HR4-exp(0.1))^2),mean((power8$HR4-exp(0.1))^2))
+
+pwd_2000A<-rbind(meanX, pwd1, pwd2, pwd3, pwd4)
+mse_2000A<-rbind(meanX, mse1, mse2, mse3, mse4)
+
+write.csv(pwd_2000A,"//unix/stat/database/recurrent/Yueci/Output/pwd_2000A.csv")
+write.csv(mse_2000A,"//unix/stat/database/recurrent/Yueci/Output/mse_2000A.csv")
